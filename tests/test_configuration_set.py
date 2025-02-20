@@ -1,9 +1,66 @@
 import os
 import numpy as np
+import pytest
 from autode.atoms import Atom
 from mlptrain.configurations import ConfigurationSet, Configuration
 from mlptrain.utils import work_in_tmp_dir
 from mlptrain.box import Box
+
+here = os.path.abspath(os.path.dirname(__file__))
+
+
+@pytest.fixture
+def config_set_xyz_with_energies_forces():
+    configs = ConfigurationSet()
+
+    with open('tmp.xyz', 'w') as xyz_file:
+        print(
+            '3',
+            'Lattice="20.000000 0.000000 0.000000 0.000000 20.000000 0.000000 0.000000 0.000000 20.000000" '
+            'energy=-11580.70167936 Properties=species:S:1:pos:R:3:forces:R:3',
+            'C   0.00000   0.00000   0.00000   -1.00000   -1.00000   -1.00000',
+            'O   1.00000   1.00000   1.00000   -2.00000    2.00000   -2.00000',
+            'H   2.00000   2.00000   2.00000    3.00000   -3.00000   -3.00000',
+            '2',
+            'Lattice="18.000000 0.000000 0.000000 0.000000 18.000000 0.000000 0.000000 0.000000 18.000000" '
+            'energy=-11581.02323085 Properties=species:S:1:pos:R:3:forces:R:3',
+            'C   0.00000   0.00000   0.00000    0.00000    0.00000    0.00000',
+            'O   1.00000   1.00000  1.00000   -1.00000    1.00000    1.00000',
+            sep='\n',
+            file=xyz_file,
+        )
+
+    configs.load_xyz(
+        'tmp.xyz', charge=0, mult=1, load_energies=True, load_forces=True
+    )
+
+    expected_values = {
+        'energies': [-11580.70167936, -11581.02323085],
+        'num_atoms': [3, 2],
+        'box_sizes': [(20, 20, 20), (18, 18, 18)],
+        'coords': np.array(
+            [
+                np.array(
+                    [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [2.0, 2.0, 2.0]],
+                    dtype=float,
+                ),
+                np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=float),
+            ],
+            dtype=object,
+        ),
+        'forces': np.array(
+            [
+                np.array(
+                    [[-1.0, -1.0, -1.0], [-2.0, 2.0, -2.0], [3.0, -3.0, -3.0]],
+                    dtype=float,
+                ),
+                np.array([[0.0, 0.0, 0.0], [-1.0, 1.0, 1.0]], dtype=float),
+            ],
+            dtype=object,
+        ),
+    }
+
+    return configs, expected_values
 
 
 @work_in_tmp_dir()
@@ -70,6 +127,9 @@ def test_configurations_load_with_energies_forces():
     loaded_config = ConfigurationSet('tmp.npz')[0]
 
     assert loaded_config.energy.true is not None
+    assert loaded_config.energy.predicted is not None
+    assert loaded_config.forces.true is not None
+    assert loaded_config.forces.predicted is not None
 
     for attr in ('energy', 'forces'):
         for kind in ('predicted', 'true'):
@@ -77,6 +137,42 @@ def test_configurations_load_with_energies_forces():
                 getattr(getattr(loaded_config, attr), kind),
                 getattr(getattr(config, attr), kind),
             )
+
+
+@work_in_tmp_dir()
+def test_configurations_load_with_energies_forces_diff_sizes(
+    h2o_configuration,
+):
+    """Test ability of mlptrain to load dataset containing structures of different sizes. The energies and forces are artifical."""
+
+    config1 = Configuration(atoms=[Atom('H')])
+    config1.energy.true = -1.0
+    config1.energy.predicted = -0.9
+
+    config1.forces.true = 1.1 * np.ones(shape=(1, 3))
+    config1.forces.predicted = 1.105 * np.ones(shape=(1, 3))
+
+    config2 = h2o_configuration
+    config2.energy.true = -3.0
+    config2.energy.predicted = -2.8
+
+    config2.forces.true = 1.5 * np.ones(shape=(3, 3))
+    config2.forces.predicted = 1.502 * np.ones(shape=(3, 3))
+
+    ConfigurationSet(config1, config2).save('tmp.npz')
+    loaded_configs = ConfigurationSet('tmp.npz')
+
+    for config in loaded_configs:
+        assert config.energy.true is not None
+        assert config.energy.predicted is not None
+        assert config.forces.true is not None
+        assert config.forces.predicted is not None
+
+    loaded_conf = loaded_configs[0]
+    assert np.allclose(loaded_conf.energy.true, config1.energy.true)
+    assert np.allclose(loaded_conf.energy.predicted, config1.energy.predicted)
+    assert np.allclose(loaded_conf.forces.true, config1.forces.true)
+    assert np.allclose(loaded_conf.forces.predicted, config1.forces.predicted)
 
 
 @work_in_tmp_dir()
@@ -101,3 +197,84 @@ def test_configurations_load_xyz():
     for config in configs:
         assert config.charge == 0
         assert config.mult == 2
+
+
+def test_configurations_load_numpy_compatibility():
+    """Test compatibility of mlp-train and npz files created with old version of numpy/autodE.
+
+    The file was created with autode==1.1.3, numpy==1.23.5 and mlptrain commit fc51272.
+    This commit is the parent from the Plumed integration commit 6a0298c.
+    """
+
+    file_path = os.path.join(here, 'data', 'water_01_preplumed.npz')
+    data = ConfigurationSet(file_path)
+    assert len(data) == 2
+    assert data[0].n_atoms != data[1].n_atoms
+    for config in data:
+        assert config.box.volume == 1000000.0
+        assert config.charge == 0
+        assert config.mult == 1
+        assert config.energy.true is not None
+        assert config.forces.true is not None
+        assert config.coordinates is not None
+
+
+@work_in_tmp_dir()
+def test_configurations_load_xyz_with_energies_forces(
+    config_set_xyz_with_energies_forces,
+):
+    # get config set from xyz
+    configs, exp_vals = config_set_xyz_with_energies_forces
+
+    assert len(configs) == 2
+
+    # check loading properties line for each config
+    for i in range(2):
+        config = configs[i]
+        assert config.box == Box(exp_vals['box_sizes'][i])
+        assert config.charge == 0
+        assert config.mult == 1
+        assert len(config.atoms) == exp_vals['num_atoms'][i]
+        assert config.energy.true == exp_vals['energies'][i]
+        assert np.allclose(config.coordinates, exp_vals['coords'][i])
+        assert np.allclose(config.forces.true, exp_vals['forces'][i])
+
+    # same tests but for config set properties
+    assert all(
+        config_energy == exp_vals['energies'][i]
+        for i, config_energy in enumerate(configs.true_energies)
+    )
+    assert all(
+        np.allclose(config_coords, exp_vals['coords'][i])
+        for i, config_coords in enumerate(configs._coordinates)
+    )
+    assert all(
+        np.allclose(config_forces, exp_vals['forces'][i])
+        for i, config_forces in enumerate(configs.true_forces)
+    )
+
+
+@work_in_tmp_dir()
+def test_configurations_load_xyz_and_save_npz(
+    config_set_xyz_with_energies_forces,
+):
+    # get config set from xyz
+    configs, exp_vals = config_set_xyz_with_energies_forces
+
+    # check saving and loading npz
+    configs.save('tmp.npz')
+    loaded_configs = ConfigurationSet('tmp.npz')
+
+    # same tests but for config set properties
+    assert all(
+        config_energy == exp_vals['energies'][i]
+        for i, config_energy in enumerate(loaded_configs.true_energies)
+    )
+    assert all(
+        np.allclose(config_coords, exp_vals['coords'][i])
+        for i, config_coords in enumerate(loaded_configs._coordinates)
+    )
+    assert all(
+        np.allclose(config_forces, exp_vals['forces'][i])
+        for i, config_forces in enumerate(loaded_configs.true_forces)
+    )

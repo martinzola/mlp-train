@@ -44,6 +44,9 @@ def train(
     pbc: bool = False,
     box_size: Optional[list] = None,
     keep_al_trajs: bool = False,
+    make_whole: bool = False,
+    microsolvation: int = 0,
+    solute_atoms_of_interest: Optional[List[int]] = None,
 ) -> None:
     """
     Train a system using active learning, by propagating dynamics using ML
@@ -145,7 +148,20 @@ def train(
         box_size: (List | None) Size of the box where MLP-MD propagated.
 
         keep_al_trajs: (bool) If True, MLP-MD trajectories generated during AL phase are saved into new folder.
+
+        make_whole: (bool) If True, the coordinates of the configurations are made whole.
+        I.e. the coordinates of any molecules that are split across the periodic boundary are
+        shifted to the other side of the box.
+
+        microsolvation: (int) If not 0, the configurations are treated as microsolvated. This
+        means that the first molecule in the configuration is treated as the solute and n solvent molecules
+        closest to it are kept. The molecules must also first be made whole across periodic boundaries.
+
+        solute_atoms_of_interest: (List[int] | None) If not None, the atoms in the solute that are in this list
+        are treated as the atoms of interest. Solvents closest to the geometric centre of these atoms will be kept
+        in the microsolvated configurations. If None, the geometric centre of the solute atoms is used in the microsolvation.
     """
+
     if md_program.lower() == 'openmm':
         if not isinstance(mlp, mlptrain.potentials.MACE):
             raise ValueError(
@@ -165,6 +181,50 @@ def train(
 
     if pbc and box_size is None:
         raise ValueError('For PBC in MD, the box_size cannot be None')
+
+    if not pbc and make_whole:
+        raise ValueError(
+            'Without pbc, there can be no molecules to make whole.'
+        )
+
+    if all([microsolvation, pbc]) and not make_whole:
+        raise ValueError(
+            'If microsolvation is not 0 and pbc is True, make_whole must also be True.'
+            'This is because the molecules must be made whole across periodic boundaries'
+            'before the solvent is removed.'
+        )
+
+    if solute_atoms_of_interest is not None and microsolvation == 0:
+        raise ValueError(
+            'The solute_atoms_of_interest argument can only be used if microsolvation is not 0.'
+        )
+
+    if microsolvation:
+        # Initial configuration, which contains all of the solvent should be used to propagate dynamics, otherwise,
+        # the subsequent configurations with solvent removed will automatically be lower energy and selected as
+        # starting configurations for the next iteration, causing transition from solvent to a vacuum cluster simulation.
+        fix_init_config = True
+
+        # A microsolvated version of the initial configuration is generated and added to the training data.
+        if init_configs is None:
+            raise ValueError(
+                'If microsolvation is not 0, an initial configuration must be provided.'
+            )
+        if init_configs[0].mol_list is None:
+            raise ValueError(
+                'If microsolvation is not 0, the initial configuration must contain a mol_list in order to'
+                'identify the solute and solvent molecules and remove the solvent until only'
+                f'n = microsolvation ={microsolvation} solvent molecules remain.'
+            )
+
+        microsolvated = deepcopy(init_configs[0])
+        microsolvated.microsolvation(
+            n_atoms_in_solvent=microsolvated.mol_list[-1]
+            - microsolvated.mol_list[-2],
+            solvents_to_keep=microsolvation,
+            solute_atoms_of_interest=solute_atoms_of_interest,
+        )
+        init_configs.append(microsolvated)
 
     if restart_iter is not None:
         _initialise_restart(
@@ -194,7 +254,7 @@ def train(
     if mlp.requires_atomic_energies:
         mlp.set_atomic_energies(method_name=method_name)
 
-    mlp.train()
+    # mlp.train()
 
     # Run the active learning loop, running iterative MLP-MD
     for iteration in range(max_active_iters):
@@ -238,6 +298,9 @@ def train(
             pbc=pbc,
             box_size=box_size,
             keep_al_trajs=keep_al_trajs,
+            make_whole=make_whole,
+            microsolvation=microsolvation,
+            solute_atoms_of_interest=solute_atoms_of_interest,
         )
 
         # Active learning finds no configurations
@@ -257,7 +320,7 @@ def train(
         if mlp.training_data.has_a_none_energy:
             mlp.training_data.remove_none_energy()
 
-        mlp.train()
+        # mlp.train()
 
     if inherit_metad_bias:
         _remove_last_inherited_metad_bias_file(max_active_iters)
@@ -418,6 +481,21 @@ def _gen_active_config(
 
         idx: (int) Index of the current simulation
 
+        make_whole: (bool) If True, the coordinates of the configurations are made
+        whole. I.e. the coordinates of any molecules that are split across the
+        periodic boundary are shifted to the other side of the box.
+
+        microsolvation: (int) If not 0, the configurations are treated as microsolvated.
+        This means that the first molecule in the configuration is treated as the solute
+        and n solvent molecules closest to it are kept. The molecules must also first be
+        made whole across periodic boundaries.
+
+        solute_atoms_of_interest: (List[int] | None) If not None, the atoms in the solute
+        that are in this list are treated as the atoms of interest. Solvents closest to
+        the geometric centre of these atoms will be kept in the microsolvated
+        configurations. If None, the geometric centre of the solute atoms is used
+        in the microsolvation.
+
     Returns:
 
         (mlptrain.Configuration): Configuration which is added to the training
@@ -452,7 +530,16 @@ def _gen_active_config(
         kwargs = _modify_kwargs_for_metad_bias_inheritance(kwargs)
 
     if pbc:
-        config.box = Box(box_size)
+        config.box = Box([box_size] * 3)
+
+    microsolvation = (
+        0 if 'microsolvation' not in kwargs else kwargs.pop('microsolvation')
+    )
+    solute_atoms_of_interest = (
+        None
+        if 'solute_atoms_of_interest' not in kwargs
+        else kwargs.pop('solute_atoms_of_interest')
+    )
 
     if kwargs['md_program'].lower() == 'openmm':
         traj = run_mlp_md_openmm(
@@ -481,8 +568,17 @@ def _gen_active_config(
 
     for frame in traj:
         frame.box = Box([100, 100, 100])
+        if microsolvation:
+            frame.microsolvation(
+                n_atoms_in_solvent=config.mol_list[-1] - config.mol_list[-2],
+                solvents_to_keep=microsolvation,
+                solute_atoms_of_interest=solute_atoms_of_interest,
+            )
+
     # Evaluate the selector on the final frame
     selector(traj.final_frame, mlp, method_name=method_name, n_cores=n_cores)
+
+    traj.final_frame.save_xyz('final_frame.xyz')
 
     if selector.select:
         if selector.check:

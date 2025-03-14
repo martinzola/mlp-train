@@ -11,6 +11,7 @@ from mlptrain.energy import Energy
 from mlptrain.forces import Forces
 from mlptrain.box import Box
 from mlptrain.configurations.calculate import run_autode
+from mlptrain.utils import work_in_tmp_dir
 from scipy.spatial import cKDTree
 import random
 import autode as ade
@@ -27,6 +28,7 @@ class Configuration(AtomCollection):
         charge: int = 0,
         mult: int = 1,
         box: Optional[Box] = None,
+        mol_list: Optional[List[int]] = None,
     ):
         """
         Set of atoms perhaps in a periodic box with an overall charge and
@@ -51,6 +53,7 @@ class Configuration(AtomCollection):
         self.charge = charge
         self.mult = mult
         self.box = box
+        self.mol_list = mol_list
 
         self.energy = Energy()
         self.forces = Forces()
@@ -173,7 +176,7 @@ class Configuration(AtomCollection):
             solvent = get_solvent(solvent_name, kind='implicit')
             solvent_smiles = solvent.smiles
             solvent_molecule = ade.Molecule(smiles=solvent_smiles)
-            solvent_molecule.optimise(method=ade.methods.XTB())
+            solvent_molecule = optimise_solvent(solvent_molecule)
 
             if solvent.name not in solvent_densities.keys():
                 raise ValueError(
@@ -219,7 +222,7 @@ class Configuration(AtomCollection):
             f'box with a side length of {box_size:.2f} Å'
         )
 
-        self.k_d_tree_insertion(
+        self._k_d_tree_insertion(
             solvent_molecule,
             box_size,
             contact_threshold,
@@ -227,7 +230,7 @@ class Configuration(AtomCollection):
             random_seed,
         )
 
-    def k_d_tree_insertion(
+    def _k_d_tree_insertion(
         self,
         solvent_molecule: ade.Molecule,
         box_size: float,
@@ -338,6 +341,91 @@ class Configuration(AtomCollection):
         # remove the last element of the mol_list, as this is the index of the last atom in the system
         self.mol_list = mol_list[:-1]
         return system_coords
+
+    def microsolvation(
+        self,
+        n_atoms_in_solvent: int,
+        solvents_to_keep: int,
+        solute_atoms_of_interest: List[int] = None,
+    ):
+        """
+        Remove all but the nearest solvents_to_keep solvent molecules to the solute. By default, the
+        centre of mass of the solute and each solvent is considered for the distance calculation. If
+        solute_atoms_of_interest is provided, the distance is calculated between the geometric center of
+        atoms in the solute_atoms_of_interest list and the centre of mass of the solvent molecules.
+        The configuration must contain a mol_list attribute, which is a list of the indices of the first atom
+        of each molecule in the configuration.
+
+        ___________________________________________________________________________
+
+        Arguments:
+
+        n_atoms_in_solvent: int
+            The number of atoms in each solvent molecule.
+
+        solvents_to_keep: int
+            The number of solvent molecules to keep.
+
+        solute_atoms_of_interest: List[int] = None
+            The indices of the atoms in the solute to consider for the distance calculation.
+
+        ___________________________________________________________________________
+        """
+
+        if self.mol_list is None:
+            logger.info('The configuration must contain a mol_list attribute.')
+            return None
+
+        if solute_atoms_of_interest is None:
+            center_of_interest = sum(
+                atom.mass * atom.coordinate
+                for atom in self.atoms[: self.mol_list[1]]
+            ) / sum(atom.mass for atom in self.atoms[0 : self.mol_list[1]])
+
+        else:
+            center_of_interest = np.average(
+                [self.atoms[i].coordinate for i in solute_atoms_of_interest],
+                axis=0,
+            )
+
+        microsolvated = mlptrain.Configuration()
+        microsolvated.atoms = self.atoms[: self.mol_list[1]]
+
+        solvent_coms = []
+        for solvent_index in self.mol_list[1:]:
+            solvent_com = sum(
+                atom.mass * atom.coordinate
+                for atom in self.atoms[
+                    solvent_index : solvent_index + n_atoms_in_solvent
+                ]
+            ) / sum(
+                atom.mass
+                for atom in self.atoms[
+                    solvent_index : solvent_index + n_atoms_in_solvent
+                ]
+            )
+            solvent_coms.append(solvent_com)
+
+        distances = [
+            np.linalg.norm(solvent_com - center_of_interest)
+            for solvent_com in solvent_coms
+        ]
+        sorted_indices = sorted(enumerate(distances), key=lambda x: x[1])
+
+        for i in range(solvents_to_keep):
+            solvent_index = self.mol_list[sorted_indices[i][0]]
+            microsolvated.atoms.extend(
+                self.atoms[solvent_index : solvent_index + n_atoms_in_solvent]
+            )
+
+        self.atoms = microsolvated.atoms
+        self.mol_list = self.mol_list[:2] + [
+            n_atoms_in_solvent * i for i in range(solvents_to_keep - 1)
+        ]
+
+        logger.info(f'Kept {solvents_to_keep} solvent molecules')
+
+        return None
 
     def update_attr_from(self, configuration: 'Configuration') -> None:
         """
@@ -542,6 +630,14 @@ def _get_max_mol_distance(conf_atoms: List[Atom]) -> float:
             for atom2 in conf_atoms
         ]
     )
+
+
+@work_in_tmp_dir()
+def optimise_solvent(solvent: ade.Molecule) -> ade.Molecule:
+    """Optimise a solvent molecule with XTB"""
+    solvent_copy = deepcopy(solvent)
+    solvent_copy.optimise(method=ade.methods.XTB())
+    return solvent_copy
 
 
 # Solvent densities were taken from the CRC handbook

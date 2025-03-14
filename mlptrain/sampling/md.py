@@ -42,6 +42,8 @@ def run_mlp_md(
     restart_files: Optional[List[str]] = None,
     copied_substrings: Optional[Sequence[str]] = None,
     kept_substrings: Optional[Sequence[str]] = None,
+    wrap: bool = False,
+    make_whole: bool = False,
     **kwargs,
 ) -> 'mlptrain.Trajectory':
     """
@@ -100,6 +102,16 @@ def run_mlp_md(
         copied_substrings: List of substrings with which files are copied
                            to the temporary directory. Files required for MLPs
                            are added to the list automatically
+
+        wrap: (bool): If True, the atoms are wrapped back into the box
+                      after each step to avoid particles drifting across
+                      periodic boundary conditions. Default is False.
+
+        make_whole: (bool): If True, then the molecules are made whole after
+                            wrapping back into the box to avoid bond breaking
+                            from periodic boundary conditions. Requires the
+                            mol_list to be defined in the configuration object.
+
     ---------------
     Keyword Arguments:
 
@@ -178,6 +190,8 @@ def run_mlp_md(
         bbond_energy=bbond_energy,
         bias=bias,
         restart_files=restart_files,
+        wrap=wrap,
+        make_whole=make_whole,
         **kwargs,
     )
 
@@ -197,6 +211,8 @@ def _run_mlp_md(
     bbond_energy: Optional[dict] = None,
     bias: Optional = None,
     restart_files: Optional[List[str]] = None,
+    wrap: bool = False,
+    make_whole: bool = False,
     **kwargs,
 ) -> 'mlptrain.Trajectory':
     """
@@ -285,7 +301,25 @@ def _run_mlp_md(
     if restart and isinstance(bias, PlumedBias) and not bias.from_file:
         _remove_colvar_duplicate_frames(bias=bias, **kwargs)
 
-    traj = _convert_ase_traj(traj_name=traj_name, bias=bias, **kwargs)
+    if make_whole and configuration.mol_list is None:
+        logger.warning('Molecules cannot be made whole without a mol_list')
+        make_whole = False
+
+    if make_whole and not wrap:
+        logger.warning(
+            'Molecules cannot be made whole without wrapping!'
+            'Turning wrapping on.'
+        )
+        wrap = True
+
+    traj = _convert_ase_traj(
+        traj_name=traj_name,
+        bias=bias,
+        wrap=wrap,
+        make_whole=make_whole,
+        mol_list=configuration.mol_list,
+        **kwargs,
+    )
 
     for energy, biased_energy in zip(energies, biased_energies):
         if energy is not None and biased_energy is not None:
@@ -477,6 +511,9 @@ def _get_traj_name(restart_files: Optional[List[str]] = None, **kwargs) -> str:
 def _convert_ase_traj(
     traj_name: str,
     bias: Optional[Union['mlptrain.Bias', 'mlptrain.PlumedBias']],
+    wrap: bool = False,
+    make_whole: bool = False,
+    mol_list: List[int] = None,
     **kwargs,
 ) -> 'mlptrain.Trajectory':
     """Convert an ASE trajectory into an mlptrain Trajectory"""
@@ -486,6 +523,9 @@ def _convert_ase_traj(
 
     # Iterate through each frame (set of atoms) in the trajectory
     for atoms in ase_traj:
+        if wrap:
+            atoms.wrap()
+
         config = Configuration()
         config.atoms = [ade.Atom(label) for label in atoms.symbols]
 
@@ -495,6 +535,17 @@ def _convert_ase_traj(
         # Set the atom_pair_list of every atom in the configuration
         for i, position in enumerate(atoms.get_positions()):
             config.atoms[i].coord = position
+
+        if make_whole:
+            if config.box.size[0] != config.box.size[1] != config.box.size[2]:
+                raise ValueError('The box is not cubic')
+
+            for i in range(len(mol_list)):
+                mol_list_with_end = mol_list + [len(config.atoms)]
+                mol = config.atoms[
+                    mol_list_with_end[i] : mol_list_with_end[i + 1]
+                ]
+                mol = _make_whole(config.box.size[0], mol)
 
         mlt_traj.append(config)
 
@@ -628,6 +679,78 @@ def _initialise_traj(
             traj.write(atoms)
 
     return traj
+
+
+def _make_whole(
+    box_size: float, mol_atoms: mlptrain.Configuration
+) -> 'mlptrain.Configuration':
+    """
+    Make molecules whole after each step. Requires the box and the mol_list
+    to be defined in the configuration object. The unction checks whether the
+    coordinates of the atoms in a molecule and checks whether any of them are
+    on the other side of the box. If they are then all of those atoms are
+    moved by a whole box length to be on the other side of the box as atom 0
+
+    example:
+
+
+    ________________                               ________________
+    |  \           |                               |              |
+    |   H          |                               |              |
+    |      H       |         ----------->          |      H       |
+    |    /         |                               |    /         |
+    |  O           |                               |  O           |
+    ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾                               ‾‾‾‾‾\‾‾‾‾‾‾‾‾‾‾
+                                                          H
+    A water molecule which was split by the periodic boundary conditions
+    is made whole by moving the split atoms on the other side of the box.
+    This allows for non-periodic DFT calculations to be performed on the
+    frames of periodic calculations, as well as easy visulisation of the
+    trajectory using common software.
+
+    This function currently only supports cubic boxes.
+
+    Please note: If a molecule is larger than 2/3 of the box size, this
+    function will not work correctly.
+    """
+
+    positions = [atom.coord for atom in mol_atoms]
+    centre_of_geometry = np.mean(positions, axis=0)
+    distances_to_cog = np.array(
+        [atom.coord - centre_of_geometry for atom in mol_atoms]
+    )
+    closest_atom_index = np.argmin(np.linalg.norm(distances_to_cog))
+    closest_atom_coordinates = mol_atoms[closest_atom_index].coord
+    for i in range(1, len(mol_atoms)):
+        print('moving')
+        atom_coordinates = mol_atoms[i].coord
+        if (
+            abs(atom_coordinates[0] - closest_atom_coordinates[0])
+            > box_size / 1.5
+        ):
+            print(atom_coordinates[0])
+            atom_coordinates[0] -= box_size * np.sign(
+                atom_coordinates[0] - closest_atom_coordinates[0]
+            )
+            print(atom_coordinates[0])
+            print('moved')
+        if (
+            abs(atom_coordinates[1] - closest_atom_coordinates[1])
+            > box_size / 1.5
+        ):
+            atom_coordinates[1] -= box_size * np.sign(
+                atom_coordinates[1] - closest_atom_coordinates[1]
+            )
+            print('moved')
+        if (
+            abs(atom_coordinates[2] - closest_atom_coordinates[2])
+            > box_size / 1.5
+        ):
+            atom_coordinates[2] -= box_size * np.sign(
+                atom_coordinates[2] - closest_atom_coordinates[2]
+            )
+            print('moved')
+    return mol_atoms
 
 
 def _n_simulation_steps(dt: float, kwargs: dict) -> int:

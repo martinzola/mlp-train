@@ -47,6 +47,7 @@ def train(
     make_whole: bool = False,
     microsolvation: int = 0,
     solute_atoms_of_interest: Optional[List[int]] = None,
+    finetuning: bool = False,
 ) -> None:
     """
     Train a system using active learning, by propagating dynamics using ML
@@ -254,7 +255,7 @@ def train(
     if mlp.requires_atomic_energies:
         mlp.set_atomic_energies(method_name=method_name)
 
-    # mlp.train()
+    mlp.train()
 
     # Run the active learning loop, running iterative MLP-MD
     for iteration in range(max_active_iters):
@@ -320,7 +321,7 @@ def train(
         if mlp.training_data.has_a_none_energy:
             mlp.training_data.remove_none_energy()
 
-        # mlp.train()
+        mlp.train()
 
     if inherit_metad_bias:
         _remove_last_inherited_metad_bias_file(max_active_iters)

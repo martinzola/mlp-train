@@ -722,7 +722,6 @@ def _make_whole(
     closest_atom_index = np.argmin(np.linalg.norm(distances_to_cog))
     closest_atom_coordinates = mol_atoms[closest_atom_index].coord
     for i in range(1, len(mol_atoms)):
-        print('moving')
         atom_coordinates = mol_atoms[i].coord
         if (
             abs(atom_coordinates[0] - closest_atom_coordinates[0])

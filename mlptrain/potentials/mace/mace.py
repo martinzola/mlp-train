@@ -172,7 +172,7 @@ class MACE(MLPotential):
             model=self.model,
             loss_fn=self.loss_fn,
             train_loader=self.train_loader,
-            valid_loader=self.valid_loader,
+            valid_loaders={'defaul_loader': self.valid_loader},
             optimizer=self.optimizer,
             lr_scheduler=self.scheduler,
             checkpoint_handler=self.checkpoint_handler,
@@ -329,6 +329,14 @@ class MACE(MLPotential):
                 f'{self.name}_data.xyz',
                 '--default_dtype',
                 Config.mace_params['dtype'],
+                '--log_dir',
+                'logs',
+                '--work_dir',
+                '.',
+                '--results_dir',
+                'results',
+                '--checkpoints_dir',
+                'checkpoints',
             ]
         )
         return args

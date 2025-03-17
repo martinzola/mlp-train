@@ -255,7 +255,9 @@ def train(
     if mlp.requires_atomic_energies:
         mlp.set_atomic_energies(method_name=method_name)
 
-    mlp.train()
+    # Skip initial training if finetuning
+    if not finetuning:
+        mlp.train()
 
     # Run the active learning loop, running iterative MLP-MD
     for iteration in range(max_active_iters):

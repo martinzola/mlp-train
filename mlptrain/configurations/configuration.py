@@ -413,7 +413,7 @@ class Configuration(AtomCollection):
         sorted_indices = sorted(enumerate(distances), key=lambda x: x[1])
 
         for i in range(solvents_to_keep):
-            solvent_index = self.mol_list[sorted_indices[i][0]]
+            solvent_index = self.mol_list[sorted_indices[i][0] + 1]
             microsolvated.atoms.extend(
                 self.atoms[solvent_index : solvent_index + n_atoms_in_solvent]
             )

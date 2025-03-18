@@ -25,7 +25,7 @@ try:
     from mace import data, modules, tools
     from mace.calculators import MACECalculator
     from mace.tools import torch_geometric
-    from mace.tools.scripts_utils import create_error_table
+    from mace.tools.tables_utils import create_error_table
 except ModuleNotFoundError:
     pass
 
@@ -449,7 +449,7 @@ class MACE(MLPotential):
                     self._train_configs,
                     self._valid_configs,
                 ) = data.random_train_valid_split(
-                    self.train_configs, self.valid_fraction, self.args.seed
+                    self.train_configs, self.valid_fraction, self.args.seed, self.args.work_dir
                 )
 
         return self._valid_configs

@@ -47,7 +47,6 @@ def train(
     make_whole: bool = False,
     microsolvation: int = 0,
     solute_atoms_of_interest: Optional[List[int]] = None,
-    finetuning: bool = False,
 ) -> None:
     """
     Train a system using active learning, by propagating dynamics using ML

@@ -524,7 +524,8 @@ def _convert_ase_traj(
     # Iterate through each frame (set of atoms) in the trajectory
     for atoms in ase_traj:
         if wrap:
-            atoms.wrap()
+            #atoms.wrap() ignore wrapping because we start with whole molecules anyway
+            pass
 
         config = Configuration()
         config.atoms = [ade.Atom(label) for label in atoms.symbols]
@@ -546,6 +547,8 @@ def _convert_ase_traj(
                     mol_list_with_end[i] : mol_list_with_end[i + 1]
                 ]
                 mol = _make_whole(config.box.size[0], mol)
+        
+        config.mol_list = mol_list
 
         mlt_traj.append(config)
 
@@ -716,39 +719,9 @@ def _make_whole(
 
     positions = [atom.coord for atom in mol_atoms]
     centre_of_geometry = np.mean(positions, axis=0)
-    distances_to_cog = np.array(
-        [atom.coord - centre_of_geometry for atom in mol_atoms]
-    )
-    closest_atom_index = np.argmin(np.linalg.norm(distances_to_cog))
-    closest_atom_coordinates = mol_atoms[closest_atom_index].coord
-    for i in range(1, len(mol_atoms)):
-        atom_coordinates = mol_atoms[i].coord
-        if (
-            abs(atom_coordinates[0] - closest_atom_coordinates[0])
-            > box_size / 1.5
-        ):
-            print(atom_coordinates[0])
-            atom_coordinates[0] -= box_size * np.sign(
-                atom_coordinates[0] - closest_atom_coordinates[0]
-            )
-            print(atom_coordinates[0])
-            print('moved')
-        if (
-            abs(atom_coordinates[1] - closest_atom_coordinates[1])
-            > box_size / 1.5
-        ):
-            atom_coordinates[1] -= box_size * np.sign(
-                atom_coordinates[1] - closest_atom_coordinates[1]
-            )
-            print('moved')
-        if (
-            abs(atom_coordinates[2] - closest_atom_coordinates[2])
-            > box_size / 1.5
-        ):
-            atom_coordinates[2] -= box_size * np.sign(
-                atom_coordinates[2] - closest_atom_coordinates[2]
-            )
-            print('moved')
+    shift = np.array([np.floor(coord/box_size) for coord in centre_of_geometry])
+    for i in range(0, len(mol_atoms)):
+        mol_atoms[i].coord = positions[i] - shift * box_size
     return mol_atoms
 
 

@@ -204,17 +204,25 @@ class Configuration(AtomCollection):
         solvent_com = solvent_molecule.com
         for n, atom in enumerate(solvent_molecule.atoms):
             atom.coordinate = atom.coordinate - solvent_com
-
-        # Calculate the number of solvent molecules to be inserted
+            
+        # Calculate the mass of the solute and solute molecules
+        solute_mass = sum([atom.mass for atom in self.atoms])
         solvent_mass = sum([atom.mass for atom in solvent_molecule.atoms])
-        # Calculate the volume of a single solvent molecule by first calculating the mass of a single molecule: m = M/N_a
-        single_mol_mass = solvent_mass / 6.02214e23
+        
+        # Calculate the volume of a single solute and solvent molecule by first calculating the mass of a single molecule: m = M/N_a
+        single_solute_mol_mass = solute_mass / 6.02214e23
+        single_solvent_mol_mass = solvent_mass / 6.02214e23
+        
+        # Assume that the density of the solute is the same as the solvent density
         # 1e24 is used to convert the density from g/cm^3 to g/Å^3 (1e24 Å^3 = 1 cm^3, 1e8 Å = 1 cm)
         density_in_angstrom = solvent_density / 1e24
-        # Then calculate the volume in Å^3 of a single molecule by dividing the mass by the density
-        single_sol_volume = (single_mol_mass) / (density_in_angstrom)
+        
+        # Then calculate the volume in Å^3 of a single solute and solvent molecule by dividing the mass by the density
+        single_solute_volume = (single_solute_mol_mass) / (density_in_angstrom)
+        single_solute_volume = (single_solvent_mol_mass) / (density_in_angstrom)
+        
         # Number of solvent molecules that would fit into the box without the solute
-        solvent_number = int(np.round((box_size**3) / single_sol_volume, 0))
+        solvent_number = int(np.round((box_size**3-single_solute_volume) / single_solute_volume, 0))
 
         logger.info(
             f'Attempting to add {solvent_number} solvent molecules'
@@ -299,11 +307,16 @@ class Configuration(AtomCollection):
                 )
                 rot_solvent = np.dot(solvent_coords, rot_matrix)
                 translation = _random_vector_in_box(
-                    box_size,
+                    box_size-contact_threshold,
                     seeded_random.random(),
                     seeded_random.random(),
                     seeded_random.random(),
                 )
+                
+                # Ensure that the translation vector is always contact_threshold/2 away from the box edges
+                # This is to avoid the solvent molecule being placed outside too close to molecules on the
+                # opposite side of the box
+                translation = (coord+contact_threshold/2 for coord in translation)
 
                 # Translate the rotated solvent molecule and check if it is within the box
                 trial_coords = rot_solvent + translation
@@ -413,7 +426,7 @@ class Configuration(AtomCollection):
         sorted_indices = sorted(enumerate(distances), key=lambda x: x[1])
 
         for i in range(solvents_to_keep):
-            solvent_index = self.mol_list[sorted_indices[i][0]]
+            solvent_index = self.mol_list[sorted_indices[i][0]+1]
             microsolvated.atoms.extend(
                 self.atoms[solvent_index : solvent_index + n_atoms_in_solvent]
             )
@@ -423,7 +436,7 @@ class Configuration(AtomCollection):
             n_atoms_in_solvent * i for i in range(solvents_to_keep - 1)
         ]
 
-        logger.info(f'Kept {solvents_to_keep} solvent molecules')
+        #logger.(f'Kept {solvents_to_keep} solvent molecules')
 
         return None
 

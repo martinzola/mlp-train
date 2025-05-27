@@ -189,6 +189,8 @@ class AtomicEnvSimilarity(SelectionMethod):
         """
         if self._n_training_envs == 0:
             return True
+        
+        print("max self._k_vec",  np.max(self._k_vec))
 
         return self.threshold**2 < np.max(self._k_vec) < self.threshold
 

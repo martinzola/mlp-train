@@ -224,6 +224,7 @@ def train(
             solvents_to_keep=microsolvation,
             solute_atoms_of_interest=solute_atoms_of_interest,
         )
+        microsolvated.save_xyz(f'microsolvated_init_config.xyz')
         init_configs.append(microsolvated)
 
     if restart_iter is not None:
@@ -533,12 +534,13 @@ def _gen_active_config(
         config.box = Box([box_size] * 3)
 
     microsolvation = (
-        0 if 'microsolvation' not in kwargs else kwargs.pop('microsolvation')
-    )
+        0 if 'microsolvation' not in kwargs else kwargs['microsolvation']
+        )
+    
     solute_atoms_of_interest = (
         None
         if 'solute_atoms_of_interest' not in kwargs
-        else kwargs.pop('solute_atoms_of_interest')
+        else kwargs['solute_atoms_of_interest']
     )
 
     if kwargs['md_program'].lower() == 'openmm':
@@ -570,7 +572,7 @@ def _gen_active_config(
         frame.box = Box([100, 100, 100])
         if microsolvation:
             frame.microsolvation(
-                n_atoms_in_solvent=config.mol_list[-1] - config.mol_list[-2],
+                n_atoms_in_solvent=config.mol_list[-1] - config.mol_list[-2],  #replace with a function that identifies solvents from mol_dict instead
                 solvents_to_keep=microsolvation,
                 solute_atoms_of_interest=solute_atoms_of_interest,
             )
